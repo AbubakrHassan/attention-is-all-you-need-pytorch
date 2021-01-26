@@ -1,7 +1,8 @@
 '''
 This script handles the training process.
 '''
-
+import sys
+sys.path.append("../Stable-Deep-Compression/")
 import argparse
 import math
 import time
@@ -17,8 +18,47 @@ from torchtext.datasets import TranslationDataset
 import transformer.Constants as Constants
 from transformer.Models import Transformer
 from transformer.Optim import ScheduledOptim
-
+from models import migrate_to_srn
+from layers import SRNMultiheadAttention, SRNConv2d, SRNLinear
 __author__ = "Yu-Hsiang Huang"
+
+C = []
+shapes = []
+Beta = 0
+
+def srank_criteria(C, shapes, Beta):
+    shape_factor = []
+    for shape in shapes:
+        shape_factor.append(max(shape) * np.log(sum(shape)))
+
+    srank_penalty = 0
+    denomenator = 0
+    for i in range(len(C)):
+        if C[i] > (1 / min(shapes[i])):
+            srank_penalty += C[i] ** 2 * shape_factor[i]
+            denomenator += shape_factor[i]
+
+    if denomenator > 0:
+        srank_penalty = srank_penalty / denomenator
+    invalid_c_penalty = 0
+    invalid_count = 0
+    for i in range(len(C)):
+        if C[i] <= (1 / min(shapes[i])):
+            invalid_c_penalty += 1 / min(shapes[i]) - C[i]
+            invalid_count += 1
+    if invalid_count > 0:
+        invalid_c_penalty = invalid_c_penalty / invalid_count
+
+    return Beta * (srank_penalty + invalid_c_penalty)
+
+
+def criteria_(pred, gold, trg_pad_idx, smoothing=False):
+    global C
+    global shapes
+    global Beta
+    loss, n_correct, n_word = cal_performance(pred, gold, trg_pad_idx, smoothing=smoothing)
+    return loss + srank_criteria(C, shapes, Beta)
+
 
 def cal_performance(pred, gold, trg_pad_idx, smoothing=False):
     ''' Apply label smoothing if needed '''
@@ -66,7 +106,7 @@ def patch_trg(trg, pad_idx):
     return trg, gold
 
 
-def train_epoch(model, training_data, optimizer, opt, device, smoothing):
+def train_epoch(model, training_data, optimizer, opt, device, smoothing, criteria=cal_performance):
     ''' Epoch operation in training phase'''
 
     model.train()
@@ -84,7 +124,7 @@ def train_epoch(model, training_data, optimizer, opt, device, smoothing):
         pred = model(src_seq, trg_seq)
 
         # backward and update parameters
-        loss, n_correct, n_word = cal_performance(
+        loss, n_correct, n_word = criteria(
             pred, gold, opt.trg_pad_idx, smoothing=smoothing) 
         loss.backward()
         optimizer.step_and_update_lr()
@@ -128,7 +168,7 @@ def eval_epoch(model, validation_data, device, opt):
     return loss_per_word, accuracy
 
 
-def train(model, training_data, validation_data, optimizer, device, opt):
+def train(model, training_data, validation_data, optimizer, device, opt, loss=cal_performance):
     ''' Start training '''
 
     log_train_file, log_valid_file = None, None
@@ -157,7 +197,7 @@ def train(model, training_data, validation_data, optimizer, device, opt):
 
         start = time.time()
         train_loss, train_accu = train_epoch(
-            model, training_data, optimizer, opt, device, smoothing=opt.label_smoothing)
+            model, training_data, optimizer, opt, device, smoothing=opt.label_smoothing, criteria=cal_performance)
         print_performances('Training', train_loss, train_accu, start)
 
         start = time.time()
@@ -192,11 +232,15 @@ def main():
     Usage:
     python train.py -data_pkl m30k_deen_shr.pkl -log m30k_deen_shr -embs_share_weight -proj_share_weight -label_smoothing -save_model trained -b 256 -warmup 128000
     '''
-
+    global C
+    global shapes
+    global Beta
     parser = argparse.ArgumentParser()
 
     parser.add_argument('-data_pkl', default=None)     # all-in-1 data pickle or bpe field
-
+    parser.add_argument('-srn', type=bool, default=False)
+    parser.add_argument('-optimize_c', type=bool, default=False)
+    parser.add_argument('-Beta', type=float, default=1.0)
     parser.add_argument('-train_path', default=None)   # bpe encoded data
     parser.add_argument('-val_path', default=None)     # bpe encoded data
 
@@ -226,6 +270,7 @@ def main():
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda
     opt.d_word_vec = opt.d_model
+    Beta = opt.Beta
 
     if not opt.log and not opt.save_model:
         print('No experiment result will be saved.')
@@ -265,12 +310,35 @@ def main():
         n_layers=opt.n_layers,
         n_head=opt.n_head,
         dropout=opt.dropout).to(device)
+    if opt.srn:
+        transformer = migrate_to_srn(transformer)
 
+    if opt.optimize_c:
+        srn_modules = [module for module in model.modules() if
+                       isinstance(module, (SRNLinear, SRNConv2d))]
+        sranks = []
+        shapes = []
+
+        for module in srn_modules:
+            W = module.weight.detach()
+            shape_w = W.shape
+            W = W.view(shape_w[0], -1)
+            sranks.append(stable_rank(W).item())
+            shapes.append(W.shape)
+
+        # a rule of thump to initialize the target srank with the current srank of the model
+        C = [Parameter((torch.ones(1) * sranks[i] / min(shapes[i])).view(())) for i in range(len(srn_modules))]
+        for i, module in enumerate(srn_modules):
+            C[i].to(device)
+            module.c = C[i]
+        criteria = criteria_
+    else:
+        criteria = cal_performance
     optimizer = ScheduledOptim(
         optim.Adam(transformer.parameters(), betas=(0.9, 0.98), eps=1e-09),
         2.0, opt.d_model, opt.n_warmup_steps)
 
-    train(transformer, training_data, validation_data, optimizer, device, opt)
+    train(transformer, training_data, validation_data, optimizer, device, opt, loss=criteria)
 
 
 def prepare_dataloaders_from_bpe_files(opt, device):
