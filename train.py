@@ -20,6 +20,8 @@ from transformer.Models import Transformer
 from transformer.Optim import ScheduledOptim
 from models import migrate_to_srn
 from layers import SRNMultiheadAttention, SRNConv2d, SRNLinear
+from utils import stable_rank
+from torch.nn.parameter import Parameter
 __author__ = "Yu-Hsiang Huang"
 
 C = []
@@ -110,7 +112,7 @@ def train_epoch(model, training_data, optimizer, opt, device, smoothing, criteri
     ''' Epoch operation in training phase'''
 
     model.train()
-    total_loss, n_word_total, n_word_correct = 0, 0, 0 
+    total_loss, n_word_total, n_word_correct = 0, 0, 0
 
     desc = '  - (Training)   '
     for batch in tqdm(training_data, mininterval=2, desc=desc, leave=False):
@@ -125,7 +127,7 @@ def train_epoch(model, training_data, optimizer, opt, device, smoothing, criteri
 
         # backward and update parameters
         loss, n_correct, n_word = criteria(
-            pred, gold, opt.trg_pad_idx, smoothing=smoothing) 
+            pred, gold, opt.trg_pad_idx, smoothing=smoothing)
         loss.backward()
         optimizer.step_and_update_lr()
 
@@ -228,7 +230,7 @@ def train(model, training_data, validation_data, optimizer, device, opt, loss=ca
                     ppl=math.exp(min(valid_loss, 100)), accu=100*valid_accu))
 
 def main():
-    ''' 
+    '''
     Usage:
     python train.py -data_pkl m30k_deen_shr.pkl -log m30k_deen_shr -embs_share_weight -proj_share_weight -label_smoothing -save_model trained -b 256 -warmup 128000
     '''
@@ -314,7 +316,7 @@ def main():
         transformer = migrate_to_srn(transformer)
 
     if opt.optimize_c:
-        srn_modules = [module for module in model.modules() if
+        srn_modules = [module for module in transformer.modules() if
                        isinstance(module, (SRNLinear, SRNConv2d))]
         sranks = []
         shapes = []
