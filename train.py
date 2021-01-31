@@ -8,7 +8,7 @@ import math
 import time
 import dill as pickle
 from tqdm import tqdm
-
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -199,7 +199,7 @@ def train(model, training_data, validation_data, optimizer, device, opt, loss=ca
 
         start = time.time()
         train_loss, train_accu = train_epoch(
-            model, training_data, optimizer, opt, device, smoothing=opt.label_smoothing, criteria=cal_performance)
+            model, training_data, optimizer, opt, device, smoothing=opt.label_smoothing, criteria=loss)
         print_performances('Training', train_loss, train_accu, start)
 
         start = time.time()
@@ -314,7 +314,7 @@ def main():
         dropout=opt.dropout).to(device)
     if opt.srn:
         transformer = migrate_to_srn(transformer)
-
+        transformer = transformer.to(device)
     if opt.optimize_c:
         srn_modules = [module for module in transformer.modules() if
                        isinstance(module, (SRNLinear, SRNConv2d))]
