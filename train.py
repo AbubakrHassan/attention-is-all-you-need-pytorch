@@ -59,7 +59,7 @@ def criteria_(pred, gold, trg_pad_idx, smoothing=False):
     global shapes
     global Beta
     loss, n_correct, n_word = cal_performance(pred, gold, trg_pad_idx, smoothing=smoothing)
-    return loss + srank_criteria(C, shapes, Beta)
+    return loss + srank_criteria(C, shapes, Beta), n_correct, n_word
 
 
 def cal_performance(pred, gold, trg_pad_idx, smoothing=False):
@@ -200,6 +200,12 @@ def train(model, training_data, validation_data, optimizer, device, opt, loss=ca
         start = time.time()
         train_loss, train_accu = train_epoch(
             model, training_data, optimizer, opt, device, smoothing=opt.label_smoothing, criteria=loss)
+        print("---------------------------")
+        with torch.no_grad():
+            for pname, p in model.named_parameters():
+                if len(p.shape) > 1:
+                    print("...Parameter ", pname, ", srank=", stable_rank(p.view(p.shape[0], -1)))
+
         print_performances('Training', train_loss, train_accu, start)
 
         start = time.time()
@@ -341,6 +347,16 @@ def main():
         2.0, opt.d_model, opt.n_warmup_steps)
 
     train(transformer, training_data, validation_data, optimizer, device, opt, loss=criteria)
+    print("~~~~~~~~~~~~~C~~~~~~~~~~~~~")
+    print(C)
+    print("~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+    print("-----------Model-----------")
+    print(transformer)
+    print("---------------------------")
+    with torch.no_grad():
+        for pname, p in transformer.named_parameters():
+            if len(p.shape) > 1:
+                print("...Parameter ", pname, ", srank=", stable_rank(p.view(p.shape[0], -1)))
 
 
 def prepare_dataloaders_from_bpe_files(opt, device):
