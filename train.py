@@ -24,6 +24,10 @@ from utils import stable_rank
 from torch.nn.parameter import Parameter
 __author__ = "Yu-Hsiang Huang"
 
+from torch.utils.tensorboard import SummaryWriter
+
+
+
 C = []
 shapes = []
 Beta = 0
@@ -200,17 +204,34 @@ def train(model, training_data, validation_data, optimizer, device, opt, loss=ca
         start = time.time()
         train_loss, train_accu = train_epoch(
             model, training_data, optimizer, opt, device, smoothing=opt.label_smoothing, criteria=loss)
+
+
         print("---------------------------")
         with torch.no_grad():
+            scalars = dict()
             for pname, p in model.named_parameters():
-                if len(p.shape) > 1:
-                    print("...Parameter ", pname, ", srank=", stable_rank(p.view(p.shape[0], -1)))
+              scalars[pname] = stable_rank(p.view(p.shape[0], -1)).item()
+
+        writer.add_scalars('sranks', scalars , epoch_i)
+
 
         print_performances('Training', train_loss, train_accu, start)
 
         start = time.time()
         valid_loss, valid_accu = eval_epoch(model, validation_data, device, opt)
         print_performances('Validation', valid_loss, valid_accu, start)
+        writer.add_scalars("ppl",
+                           {
+                               "train": math.exp(min(train_loss, 100)),
+                               "validation": math.exp(min(valid_loss,100)),
+                           }, epoch_i)
+
+        writer.add_scalars("acc",
+                           {
+                               "train ": train_accu,
+                               "validation": valid_accu
+                           }
+                           , epoch_i)
 
         valid_losses += [valid_loss]
 
@@ -344,7 +365,7 @@ def main():
         criteria = cal_performance
     optimizer = ScheduledOptim(
         optim.Adam(transformer.parameters(), betas=(0.9, 0.98), eps=1e-09),
-        2.0, opt.d_model, opt.n_warmup_steps)
+        8.0, opt.d_model, opt.n_warmup_steps)
 
     train(transformer, training_data, validation_data, optimizer, device, opt, loss=criteria)
     print("~~~~~~~~~~~~~C~~~~~~~~~~~~~")
@@ -356,7 +377,7 @@ def main():
     with torch.no_grad():
         for pname, p in transformer.named_parameters():
             if len(p.shape) > 1:
-                print("...Parameter ", pname, ", srank=", stable_rank(p.view(p.shape[0], -1)))
+                print("...Parameter ", pname, ", srank=", stable_rank(p.view(p.shape[0], -1)).item())
 
 
 def prepare_dataloaders_from_bpe_files(opt, device):
@@ -375,12 +396,12 @@ def prepare_dataloaders_from_bpe_files(opt, device):
 
     train = TranslationDataset(
         fields=fields,
-        path=opt.train_path, 
+        path=opt.train_path,
         exts=('.src', '.trg'),
         filter_pred=filter_examples_with_length)
     val = TranslationDataset(
         fields=fields,
-        path=opt.val_path, 
+        path=opt.val_path,
         exts=('.src', '.trg'),
         filter_pred=filter_examples_with_length)
 
@@ -421,4 +442,5 @@ def prepare_dataloaders(opt, device):
 
 
 if __name__ == '__main__':
+    writer = SummaryWriter('/content/tensorboard/nmt')
     main()
